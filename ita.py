@@ -361,16 +361,21 @@ def convert_image_to_audio(image_path, output_path, progress_var, progress_label
         weights = counts[values].astype(np.float64)
 
         t = np.linspace(0, duration, num_samples, endpoint=False)
+        omega = 2 * np.pi * t  # 相位斜率预先算好，避免每块重复乘
         audio = np.zeros(num_samples, dtype=np.float64)
         # 单块数据量控制在 8M 个 double 以内，避免大采样率/长时长下占用过多内存
         block_size = max(1, min(16, 8_000_000 // max(1, num_samples)))
         num_blocks = max(1, (len(frequencies) + block_size - 1) // block_size)
+        buffer = np.empty((block_size, num_samples), dtype=np.float64)
 
         for i in range(num_blocks):
             start = i * block_size
             end = min((i + 1) * block_size, len(frequencies))
-            block_audio = np.sin(2 * np.pi * frequencies[start:end, None] * t)
-            audio += (block_audio * weights[start:end, None]).sum(axis=0)
+            # 复用预分配缓冲做原地运算，再用 BLAS 加权求和，高采样率下比逐块新建数组快一倍
+            block = buffer[:end - start]
+            np.multiply(omega, frequencies[start:end, None], out=block)
+            np.sin(block, out=block)
+            audio += weights[start:end] @ block
             post_to_ui(update_progress, progress_var, progress_label, time_label,
                        (i + 1) / num_blocks * 100, start_time)
 
@@ -558,7 +563,7 @@ time_label.pack()
 sample_rate_label = tk.Label(root, text=languages[current_language]['sample_rate_label'])
 sample_rate_label.pack()
 sample_rate_entry = tk.Entry(root)
-sample_rate_entry.insert(0, "20000")  # 默认值
+sample_rate_entry.insert(0, "44100")  # 默认值
 sample_rate_entry.pack()
 
 duration_label = tk.Label(root, text=languages[current_language]['duration_label'])
